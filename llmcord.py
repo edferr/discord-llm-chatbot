@@ -17,6 +17,11 @@ logging.basicConfig(
 )
 logging.getLogger("LiteLLM").setLevel(logging.WARNING)
 
+# Add diagnostic logging for environment variables
+logging.info(f"LLM: {env['LLM']}")
+logging.info(f"DISCORD_CLIENT_ID: {env['DISCORD_CLIENT_ID']}")
+# Add logging for other environment variables as needed
+
 LOCAL_LLM: bool = env["LLM"].startswith("local/")
 VISION_LLM: bool = any(x in env["LLM"] for x in ("claude-3", "llava", "vision"))
 LLM_SUPPORTS_MESSAGE_NAME: bool = any(env["LLM"].startswith(x) for x in ("gpt", "openai/gpt")) and "gpt-4-vision-preview" not in env["LLM"]
@@ -87,13 +92,19 @@ async def on_message(msg):
 
     # Filter out unwanted messages
     if (
-        msg.channel.type not in ALLOWED_CHANNEL_TYPES
-        or (msg.channel.type != discord.ChannelType.private and discord_client.user not in msg.mentions)
-        or (ALLOWED_CHANNEL_IDS and not any(id in ALLOWED_CHANNEL_IDS for id in (msg.channel.id, getattr(msg.channel, "parent_id", None))))
-        or (ALLOWED_ROLE_IDS and (msg.channel.type == discord.ChannelType.private or not any(role.id in ALLOWED_ROLE_IDS for role in msg.author.roles)))
-        or msg.author.bot
+            msg.channel.type not in ALLOWED_CHANNEL_TYPES
+            or (msg.channel.type != discord.ChannelType.private and discord_client.user not in msg.mentions)
+            or (ALLOWED_CHANNEL_IDS and not any(id in ALLOWED_CHANNEL_IDS for id in (msg.channel.id, getattr(msg.channel, "parent_id", None))))
+            or (ALLOWED_ROLE_IDS and (msg.channel.type == discord.ChannelType.private or not any(role.id in ALLOWED_ROLE_IDS for role in msg.author.roles)))
+            or msg.author.bot
     ):
+        logging.info("Ignoring message - filter conditions not met.")
         return
+
+    # Add diagnostic logging for message content
+    logging.info(f"Message content: {msg.content}")
+    # Dump original message content
+    print(f"Original message content: {msg.content}")
 
     # Build message reply chain and set user warnings
     reply_chain = []
@@ -102,10 +113,16 @@ async def on_message(msg):
     while curr_msg and len(reply_chain) < MAX_MESSAGES:
         async with msg_locks.setdefault(curr_msg.id, asyncio.Lock()):
             if curr_msg.id not in msg_nodes:
+                mentioned_user_display_name = msg.mentions[0].display_name if msg.mentions else "Unknown"
+                print(f"\nMentioned user: {mentioned_user_display_name}\n")  # Diagnostic log for mentioned user's display name
                 curr_msg_role = "assistant" if curr_msg.author == discord_client.user else "user"
                 curr_msg_text = curr_msg.embeds[0].description if curr_msg.embeds and curr_msg.author.bot else curr_msg.content
                 if curr_msg_text.startswith(discord_client.user.mention):
+                    # Replace user mention placeholder with actual user mention
                     curr_msg_text = curr_msg_text.replace(discord_client.user.mention, "", 1).lstrip()
+                curr_msg_text = curr_msg_text.replace("<@ID>", f"@{mentioned_user_display_name}")  # Replace <@ID> with mentioned user's display name
+                # Dump message content after replacement
+                print(f"Message content after replacement: {curr_msg_text}")
                 curr_msg_images = [att for att in curr_msg.attachments if "image" in att.content_type]
 
                 if VISION_LLM and curr_msg_images[:MAX_IMAGES]:
@@ -128,17 +145,18 @@ async def on_message(msg):
                     "content": curr_msg_content,
                 }
                 if LLM_SUPPORTS_MESSAGE_NAME:
+                    # Include user ID in message data
                     msg_node_data["name"] = str(curr_msg.author.id)
                 msg_nodes[curr_msg.id] = MsgNode(data=msg_node_data, too_many_images=len(curr_msg_images) > MAX_IMAGES)
 
                 try:
                     if (
-                        not curr_msg.reference
-                        and curr_msg.channel.type != discord.ChannelType.private
-                        and discord_client.user.mention not in curr_msg.content
-                        and (prev_msg_in_channel := ([m async for m in curr_msg.channel.history(before=curr_msg, limit=1)] or [None])[0])
-                        and any(prev_msg_in_channel.type == type for type in (discord.MessageType.default, discord.MessageType.reply))
-                        and prev_msg_in_channel.author == curr_msg.author
+                            not curr_msg.reference
+                            and curr_msg.channel.type != discord.ChannelType.private
+                            and discord_client.user.mention not in curr_msg.content
+                            and (prev_msg_in_channel := ([m async for m in curr_msg.channel.history(before=curr_msg, limit=1)] or [None])[0])
+                            and any(prev_msg_in_channel.type == type for type in (discord.MessageType.default, discord.MessageType.reply))
+                            and prev_msg_in_channel.author == curr_msg.author
                     ):
                         msg_nodes[curr_msg.id].replied_to_msg = prev_msg_in_channel
                     else:
@@ -206,6 +224,9 @@ async def on_message(msg):
     except:
         logging.exception("Error while streaming response")
 
+    # Dump response message content
+    print(f"Response message content: {response_contents}")
+
     # Create MsgNodes for response messages
     for response_msg in response_msgs:
         msg_node_data = {
@@ -224,9 +245,8 @@ async def on_message(msg):
                 msg_nodes.pop(msg_id, None)
                 msg_locks.pop(msg_id, None)
 
-
 async def main():
     await discord_client.start(env["DISCORD_BOT_TOKEN"])
 
-
 asyncio.run(main())
+
