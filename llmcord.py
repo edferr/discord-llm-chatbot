@@ -53,15 +53,17 @@ if env["LLM_TOP_P"]:
     extra_kwargs["top_p"] = float(env["LLM_TOP_P"])
 if LOCAL_LLM:
     env["LLM"] = env["LLM"].replace("local/", "", 1)
-    extra_kwargs["base_url"] = env["LOCAL_SERVER_URL"]
+    extra_kwargs["base_url"] = "https://127.0.0.1:1337/v1"  #env["OPENAI_API_BASE"]
     extra_kwargs["api_key"] = env["LOCAL_API_KEY"] or "Not used"
     if env["OOBABOOGA_CHARACTER"]:
         extra_kwargs["mode"] = "chat"
         extra_kwargs["character"] = env["OOBABOOGA_CHARACTER"]
 
+extra_kwargs["base_url"] = "http://localhost:1337/v1"
+
 intents = discord.Intents.default()
 intents.message_content = True
-activity = discord.CustomActivity(name=env["CUSTOM_DISCORD_STATUS"][:128] or "github.com/jakobdylanc/discord-llm-chatbot")
+activity = discord.CustomActivity(name=env["CUSTOM_DISCORD_STATUS"][:128] or "gpt-3.5-turbo")
 discord_client = discord.Client(intents=intents, activity=activity)
 
 msg_nodes = {}
