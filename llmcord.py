@@ -91,7 +91,6 @@ def get_system_prompt():
 @discord_client.event
 async def on_message(msg):
     global msg_nodes, msg_locks, last_task_time
-
     # Filter out unwanted messages
     if (
             msg.channel.type not in ALLOWED_CHANNEL_TYPES
@@ -107,6 +106,20 @@ async def on_message(msg):
     logging.info(f"Message content: {msg.content}")
     # Dump original message content
     print(f"Original message content: {msg.content}")
+
+    # Start a new thread with the user's question as the thread name and use the message as the starter message
+    user_question = msg.content[22:]                #truncate the user ID from the start of the message
+    truncated_thread_name = user_question[:100]     #truncate to 100 characters
+
+    if len(truncated_thread_name) < 1:
+        print("Error: Thread name is too short.")
+        return
+
+    try:
+        thread = await msg.channel.create_thread(name=truncated_thread_name, message=msg)
+        print(f"Started thread: {thread.name}")  # Diagnostic
+    except Exception as e:
+        print(f"Error starting thread: {e}")  # Diagnostic
 
     # Build message reply chain and set user warnings
     reply_chain = []
@@ -229,7 +242,20 @@ async def on_message(msg):
     # Dump response message content
     print(f"Response message content: {response_contents}")
 
-    # Create MsgNodes for response messages
+    try:
+    # Check if the thread exists and send the response to the thread
+        if thread:
+            for response_content in response_contents:
+                await thread.send(response_content)
+                print(f"Sent response to thread: {thread.name}")  # Diagnostic
+        else:
+            print("Error: Thread not found.")  # Diagnostic
+            return
+    except Exception as e:
+        print(f"Error sending response to thread: {e}")  # Diagnostic
+
+
+# Create MsgNodes for response messages
     for response_msg in response_msgs:
         msg_node_data = {
             "role": "assistant",
