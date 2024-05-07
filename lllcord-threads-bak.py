@@ -1,10 +1,6 @@
 import asyncio
 import base64
 from datetime import datetime as dt
-import re
-
-import nltk
-from bs4 import BeautifulSoup
 import logging
 from os import environ as env
 import requests
@@ -46,7 +42,7 @@ if env["DISCORD_CLIENT_ID"]:
 
 system_prompt_extras = []
 if LLM_SUPPORTS_MESSAGE_NAME:
-    system_prompt_extras.append("When you want to say the users name, instead say '<@ID>'. we will replace it later.")
+    system_prompt_extras.append("User's names are their Discord IDs and should be typed as '<@ID>'.")
 
 extra_kwargs = {}
 if env["LLM_MAX_TOKENS"]:
@@ -74,8 +70,6 @@ msg_nodes = {}
 msg_locks = {}
 last_task_time = None
 
-thread = None
-
 
 class MsgNode:
     def __init__(self, data, replied_to_msg=None, too_many_images=False, fetch_next_failed=False):
@@ -92,70 +86,6 @@ def get_system_prompt():
             "content": "\n".join([env["CUSTOM_SYSTEM_PROMPT"]] + system_prompt_extras + [f"Today's date: {dt.now().strftime('%B %d %Y')}"]),
         }
     ]
-
-async def update_activity():
-    loaded_models = get_loaded_models()
-    if loaded_models:
-        activity = discord.CustomActivity(name=f"{loaded_models}")
-        await discord_client.change_presence(activity=activity)
-
-
-
-
-def get_loaded_models():
-    url = "http://localhost:1234/v1/models"
-    response = requests.get(url)
-    data = response.json()
-
-    # Extract the first model_id
-    first_model_id = data['data'][0]['id'] if data['data'] else None
-
-    # Truncate the model_id string
-    truncated_model_id = truncate_model_id(first_model_id)
-
-    return truncated_model_id
-
-def truncate_model_id(model_id):
-    # Truncate the model_id string to the desired format
-    if model_id:
-        truncated_id = model_id.split("/")[-1]  # Get the last part of the string after '/'
-        return truncated_id
-    else:
-        return None
-def chunk_text(text, chunk_size):
-    chunks = [text[i:i+chunk_size] for i in range(0, len(text), chunk_size)]
-    return chunks
-def lookup_url(message):
-    # Parse the message to extract the URL
-    url = None
-    words = message.split()
-    for word in words:
-        if word.startswith("http://") or word.startswith("https://"):
-            url = word
-            break
-
-    if url is None:
-        return None
-        #return ["No URL needed."]
-
-    # Access the URL and extract text using Beautiful Soup
-    try:
-        response = requests.get(url)
-        soup = BeautifulSoup(response.content, "html.parser")
-
-        # Find all paragraph tags and extract their text
-        paragraphs = soup.find_all('p')
-        extracted_text = ' '.join([paragraph.get_text() for paragraph in paragraphs])
-
-        # Truncate to 3800 characters only if needed
-        truncated_text = extracted_text
-
-        # Chunk the text into smaller chunks
-        chunks = [truncated_text[i:i+2000] for i in range(0, len(truncated_text), 2000)]
-
-        return chunks
-    except Exception as e:
-        return [f"An error occurred: {str(e)}"]
 
 
 @discord_client.event
@@ -179,21 +109,13 @@ async def on_message(msg):
 
     # Start a new thread with the user's question as the thread name and use the message as the starter message
     user_question = msg.content[22:]                #truncate the user ID from the start of the message
-
-    truncated_thread_name = re.sub(r'[^a-zA-Z0-9]', ' ', user_question[:100])
-
+    truncated_thread_name = user_question[:100]     #truncate to 100 characters
 
     if len(truncated_thread_name) < 1:
         print("Error: Thread name is too short.")
         return
 
     try:
-        truncated_content = msg.content[:1999]
-        print(f"TRUNCATED CONTENT: {truncated_content} /// TRUNCATED THREAD NAME: {truncated_thread_name}")  # Diagnostic
-        #truncated_msg = await msg.channel.send(truncated_content)
-        #test for mixtral - removed
-
-
         thread = await msg.channel.create_thread(name=truncated_thread_name, message=msg)
         print(f"Started thread: {thread.name}")  # Diagnostic
     except Exception as e:
@@ -201,30 +123,19 @@ async def on_message(msg):
 
     # Build message reply chain and set user warnings
     reply_chain = []
-    website_contents_chunks = lookup_url(user_question)
-    if(website_contents_chunks is not None):
-        total_chunks = len(website_contents_chunks)
-
-        for i, chunk in enumerate(website_contents_chunks, start=1):
-            website_contents_message = {
-                "role": "user",
-                "content": f"WEBSITE CONTENTS (NEVER SAY THIS OUT LOUD): {chunk} (part {i} of {total_chunks})"
-            }
-            reply_chain.append(website_contents_message)
-
     user_warnings = set()
     curr_msg = msg
     while curr_msg and len(reply_chain) < MAX_MESSAGES:
         async with msg_locks.setdefault(curr_msg.id, asyncio.Lock()):
             if curr_msg.id not in msg_nodes:
-                mentioned_user_display_name = msg.author.display_name
-                print(f"\nMentioning user: {mentioned_user_display_name}\n")  # Diagnostic log for mentioned user's display name
+                mentioned_user_display_name = msg.mentions[0].display_name if msg.mentions else "Unknown"
+                print(f"\nMentioned user: {mentioned_user_display_name}\n")  # Diagnostic log for mentioned user's display name
                 curr_msg_role = "assistant" if curr_msg.author == discord_client.user else "user"
                 curr_msg_text = curr_msg.embeds[0].description if curr_msg.embeds and curr_msg.author.bot else curr_msg.content
                 if curr_msg_text.startswith(discord_client.user.mention):
                     # Replace user mention placeholder with actual user mention
                     curr_msg_text = curr_msg_text.replace(discord_client.user.mention, "", 1).lstrip()
-                #curr_msg_text = curr_msg_text.replace("<@ID>", f"@{mentioned_user_display_name}")  # Replace <@ID> with mentioned user's display name
+                curr_msg_text = curr_msg_text.replace("<@ID>", f"@{mentioned_user_display_name}")  # Replace <@ID> with mentioned user's display name
                 # Dump message content after replacement
                 print(f"Message content after replacement: {curr_msg_text}")
                 curr_msg_images = [att for att in curr_msg.attachments if "image" in att.content_type]
@@ -319,7 +230,7 @@ async def on_message(msg):
                         while edit_task and not edit_task.done():
                             await asyncio.sleep(0)
                         if response_contents[-1].strip():
-                            embed.description = response_contents[-1].replace("<@ID>", f"@{msg.author.display_name}")
+                            embed.description = response_contents[-1]
                         embed.color = EMBED_COLOR["complete"] if is_final_edit else EMBED_COLOR["incomplete"]
                         edit_task = asyncio.create_task(response_msgs[-1].edit(embed=embed))
                         last_task_time = dt.now().timestamp()
@@ -330,18 +241,13 @@ async def on_message(msg):
 
     # Dump response message content
     print(f"Response message content: {response_contents}")
-    response_contents[-1] = "".join(response_contents).replace("<@ID>", f"@{msg.author.display_name}")
-    #print(f"Response message REPL: {response_contents}")
 
     try:
-    # Check if the thread exists and send the response to the thread
+        # Check if the thread exists and send the response to the thread
         if thread:
             for response_content in response_contents:
-                # Split the content into chunks of max 2000 characters
-                chunks = [response_content[i:i+2000] for i in range(0, len(response_content), 2000)]
-                for chunk in chunks:
-                    await thread.send(chunk)
-                    print(f"Sent response to thread: {thread.name}")  # Diagnostic
+                await thread.send(response_content)
+                print(f"Sent response to thread: {thread.name}")  # Diagnostic
         else:
             print("Error: Thread not found.")  # Diagnostic
             return
@@ -349,7 +255,7 @@ async def on_message(msg):
         print(f"Error sending response to thread: {e}")  # Diagnostic
 
 
-# Create MsgNodes for response messages
+    # Create MsgNodes for response messages
     for response_msg in response_msgs:
         msg_node_data = {
             "role": "assistant",
