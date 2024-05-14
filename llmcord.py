@@ -28,8 +28,10 @@ logging.info(f"DISCORD_CLIENT_ID: {env['DISCORD_CLIENT_ID']}")
 
 LOCAL_LLM: bool = env["LLM"].startswith("local/")
 VISION_LLM: bool = any(x in env["LLM"] for x in ("claude-3", "llava", "vision"))
-LLM_SUPPORTS_MESSAGE_NAME: bool = any(env["LLM"].startswith(x) for x in ("gpt", "openai/gpt")) and "gpt-4-vision-preview" not in env["LLM"]
+LLM_SUPPORTS_MESSAGE_NAME: bool = True
+#LLM_SUPPORTS_MESSAGE_NAME: bool = any(env["LLM"].startswith(x) for x in ("gpt", "openai/gpt")) and "gpt-4-vision-preview" not in env["LLM"]
 
+BOT_ROLE_ID = 1225893397810643049  # Update with your bot's role ID
 ALLOWED_CHANNEL_TYPES = (discord.ChannelType.text, discord.ChannelType.public_thread, discord.ChannelType.private_thread, discord.ChannelType.private)
 ALLOWED_CHANNEL_IDS = tuple(int(id) for id in env["ALLOWED_CHANNEL_IDS"].split(",") if id)
 ALLOWED_ROLE_IDS = tuple(int(id) for id in env["ALLOWED_ROLE_IDS"].split(",") if id)
@@ -138,41 +140,59 @@ def lookup_url(message):
         return None
         #return ["No URL needed."]
 
-    # Access the URL and extract text using Beautiful Soup
-    try:
-        response = requests.get(url)
-        soup = BeautifulSoup(response.content, "html.parser")
+    timeout = aiohttp.ClientTimeout(total=5)  # Set the total timeout to 5 seconds
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        try:
+            async with session.get(url) as response:
+                response.raise_for_status()  # Raise an error for bad HTTP responses
+                soup = BeautifulSoup(await response.text(), "html.parser")
+                paragraphs = soup.find_all('p')
+                extracted_text = ' '.join([paragraph.get_text() for paragraph in paragraphs])
+                truncated_text = extracted_text
+                chunks = [truncated_text[i:i+2000] for i in range(0, len(truncated_text), 2000)]
+                return chunks
+        except asyncio.TimeoutError:
+            logging.error("The request timed out")
+            return [f"Webpage ERROR: The request to {url} timed out. Inform the User."]
+        except aiohttp.ClientError as e:
+            logging.error(f"Webpage ERROR: Exception occurred while fetching URL: {url} - {str(e)}")
+            return [f"Webpage ERROR: Anomaly: {str(e)}. Inform the User"]
+async def process_text_file(file):
+    # Read the text file
+    file_content = await file.read()
+    file_content_decoded = file_content.decode("utf-8")
 
-        # Find all paragraph tags and extract their text
-        paragraphs = soup.find_all('p')
-        extracted_text = ' '.join([paragraph.get_text() for paragraph in paragraphs])
+    # Chunk the text into smaller chunks
+    chunks = [file_content_decoded[i:i+1999] for i in range(0, len(file_content_decoded), 1999)]
 
-        # Truncate to 3800 characters only if needed
-        truncated_text = extracted_text
-
-        # Chunk the text into smaller chunks
-        chunks = [truncated_text[i:i+2000] for i in range(0, len(truncated_text), 2000)]
-
-        return chunks
-    except Exception as e:
-        return [f"An error occurred: {str(e)}"]
-
-
+    return chunks
 @discord_client.event
 async def on_message(msg):
     global msg_nodes, msg_locks, last_task_time
     # Filter out unwanted messages
     if (
-            msg.channel.type not in ALLOWED_CHANNEL_TYPES
-            or (msg.channel.type != discord.ChannelType.private and discord_client.user not in msg.mentions)
+            msg.author.bot
+            or (msg.channel.type not in ALLOWED_CHANNEL_TYPES)
+            or (msg.channel.type != discord.ChannelType.private and (discord_client.user not in msg.mentions) and discord_client.user.name not in [role.name for role in msg.role_mentions])
             or (ALLOWED_CHANNEL_IDS and not any(id in ALLOWED_CHANNEL_IDS for id in (msg.channel.id, getattr(msg.channel, "parent_id", None))))
-            or (ALLOWED_ROLE_IDS and (msg.channel.type == discord.ChannelType.private or not any(role.id in ALLOWED_ROLE_IDS for role in msg.author.roles)))
-            or msg.author.bot
     ):
         logging.info("Ignoring message - filter conditions not met.")
         return
 
-    # Add diagnostic logging for message content
+    logging.info(f"***Message content: {msg.content} message author: {author}")
+
+    if msg.attachments and any(att.content_type.startswith('text') for att in msg.attachments):
+        for attachment in msg.attachments:
+            if attachment.content_type.startswith('text'):
+                chunks = await process_text_file(attachment)
+
+                for i, chunk in enumerate(chunks, start=1):
+                    file_contents_message = {
+                        "role": "user",
+                        "content": f"FILE CONTENTS (part {i} of {len(chunks)}): \n{chunk}",
+                    }
+                    reply_chain.append(file_contents_message)
+
     logging.info(f"Message content: {msg.content}")
     # Dump original message content
     print(f"Original message content: {msg.content}")
@@ -189,20 +209,14 @@ async def on_message(msg):
 
     try:
         truncated_content = msg.content[:1999]
-        print(f"TRUNCATED CONTENT: {truncated_content} /// TRUNCATED THREAD NAME: {truncated_thread_name}")  # Diagnostic
-        #truncated_msg = await msg.channel.send(truncated_content)
-        #test for mixtral - removed
-
-
+        logging.info(f"TRUNCATED CONTENT: {truncated_content} /// TRUNCATED THREAD NAME: {truncated_thread_name}")
         thread = await msg.channel.create_thread(name=truncated_thread_name, message=msg)
-        print(f"Started thread: {thread.name}")  # Diagnostic
+        logging.info(f"Started thread: {thread.name}")
     except Exception as e:
-        print(f"Error starting thread: {e}")  # Diagnostic
+        logging.error(f"Error starting thread: {e}")
 
-    # Build message reply chain and set user warnings
-    reply_chain = []
-    website_contents_chunks = lookup_url(user_question)
-    if(website_contents_chunks is not None):
+    website_contents_chunks = await lookup_url(user_question)
+    if website_contents_chunks is not None:
         total_chunks = len(website_contents_chunks)
 
         for i, chunk in enumerate(website_contents_chunks, start=1):
@@ -250,7 +264,9 @@ async def on_message(msg):
                 }
                 if LLM_SUPPORTS_MESSAGE_NAME:
                     # Include user ID in message data
-                    msg_node_data["name"] = str(curr_msg.author.id)
+                    msg_node_data["name"] = str(author)
+                    logging.info(f"author: {author}")
+
                 msg_nodes[curr_msg.id] = MsgNode(data=msg_node_data, too_many_images=len(curr_msg_images) > MAX_IMAGES)
 
                 try:
@@ -319,7 +335,8 @@ async def on_message(msg):
                         while edit_task and not edit_task.done():
                             await asyncio.sleep(0)
                         if response_contents[-1].strip():
-                            embed.description = response_contents[-1].replace("<@ID>", f"@{msg.author.display_name}")
+                            embed.description = response_contents[-1].replace("<@ID>", f"@{author}") #for the channel message replacemtn
+                            #logging.info(embed.description)
                         embed.color = EMBED_COLOR["complete"] if is_final_edit else EMBED_COLOR["incomplete"]
                         edit_task = asyncio.create_task(response_msgs[-1].edit(embed=embed))
                         last_task_time = dt.now().timestamp()
@@ -330,7 +347,7 @@ async def on_message(msg):
 
     # Dump response message content
     print(f"Response message content: {response_contents}")
-    response_contents[-1] = "".join(response_contents).replace("<@ID>", f"@{msg.author.display_name}")
+    response_contents[-1] = "".join(response_contents).replace("<@ID>", f"@{author}") #for the thread replacement
     #print(f"Response message REPL: {response_contents}")
 
     try:
