@@ -3,6 +3,9 @@ import base64
 from datetime import datetime as dt
 import re
 
+import aiohttp
+from aiohttp import ClientTimeout
+
 import nltk
 from bs4 import BeautifulSoup
 import logging
@@ -127,7 +130,9 @@ def truncate_model_id(model_id):
 def chunk_text(text, chunk_size):
     chunks = [text[i:i+chunk_size] for i in range(0, len(text), chunk_size)]
     return chunks
-def lookup_url(message):
+
+
+async def lookup_url(message):
     # Parse the message to extract the URL
     url = None
     words = message.split()
@@ -169,6 +174,9 @@ async def process_text_file(file):
 @discord_client.event
 async def on_message(msg):
     global msg_nodes, msg_locks, last_task_time
+    reply_chain = []
+    author = msg.author.display_name
+
     # Filter out unwanted messages
     if (
             msg.author.bot
