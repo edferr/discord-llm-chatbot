@@ -132,6 +132,22 @@ def chunk_text(text, chunk_size):
     return chunks
 
 
+from youtube_transcript_api import YouTubeTranscriptApi
+
+def getYeetSRT(youtube_url):
+    # Extract the video ID from the URL
+    video_id = youtube_url.split('v=')[1]
+
+    # Get the transcript for the video
+    srt = YouTubeTranscriptApi.get_transcript(video_id)
+
+    # Combine the transcript into a single string
+    buffer = ""
+    for entry in srt:
+        buffer += entry['text'] + " "
+
+    return buffer
+
 async def lookup_url(message):
     # Parse the message to extract the URL
     url = None
@@ -143,7 +159,17 @@ async def lookup_url(message):
 
     if url is None:
         return None
-        #return ["No URL needed."]
+
+    # Check if the URL is a YouTube URL
+    if "www.youtube.com" in url:
+        try:
+            transcript = getYeetSRT(url)
+            chunks = [transcript[i:i+2000] for i in range(0, len(transcript), 2000)]
+            return chunks
+        except Exception as e:
+            logging.error(f"Error fetching YouTube transcript: {str(e)}")
+            return [f"Webpage ERROR: Anomaly: {str(e)}. Inform the User"]
+
 
     timeout = aiohttp.ClientTimeout(total=5)  # Set the total timeout to 5 seconds
     async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -202,17 +228,13 @@ async def on_message(msg):
                     reply_chain.append(file_contents_message)
 
     logging.info(f"Message content: {msg.content}")
-    # Dump original message content
-    print(f"Original message content: {msg.content}")
 
-    # Start a new thread with the user's question as the thread name and use the message as the starter message
-    user_question = msg.content[22:]                #truncate the user ID from the start of the message
+    user_question = msg.content[22:]  # truncate the user ID from the start of the message
 
     truncated_thread_name = re.sub(r'[^a-zA-Z0-9]', ' ', user_question[:100])
 
-
     if len(truncated_thread_name) < 1:
-        print("Error: Thread name is too short.")
+        logging.error("Error: Thread name is too short.")
         return
 
     try:
@@ -359,7 +381,7 @@ async def on_message(msg):
     #print(f"Response message REPL: {response_contents}")
 
     try:
-    # Check if the thread exists and send the response to the thread
+        # Check if the thread exists and send the response to the thread
         if thread:
             for response_content in response_contents:
                 # Split the content into chunks of max 2000 characters
@@ -374,7 +396,7 @@ async def on_message(msg):
         print(f"Error sending response to thread: {e}")  # Diagnostic
 
 
-# Create MsgNodes for response messages
+    # Create MsgNodes for response messages
     for response_msg in response_msgs:
         msg_node_data = {
             "role": "assistant",
