@@ -1,0 +1,4 @@
+services:
+  oraclebot-svc:
+    build: .
+    container_name: OracleBot

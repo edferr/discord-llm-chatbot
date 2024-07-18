@@ -62,13 +62,13 @@ if env["LLM_TOP_P"]:
     extra_kwargs["top_p"] = float(env["LLM_TOP_P"])
 if LOCAL_LLM:
     env["LLM"] = env["LLM"].replace("local/", "", 1)
-    extra_kwargs["base_url"] = "https://127.0.0.1:1337/v1"  #env["OPENAI_API_BASE"]
+    extra_kwargs["base_url"] = env["OPENAI_API_BASE"]
     extra_kwargs["api_key"] = env["LOCAL_API_KEY"] or "Not used"
     if env["OOBABOOGA_CHARACTER"]:
         extra_kwargs["mode"] = "chat"
         extra_kwargs["character"] = env["OOBABOOGA_CHARACTER"]
 
-extra_kwargs["base_url"] = "http://localhost:1337/v1"
+extra_kwargs["base_url"] = env["OPENAI_API_BASE"]
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -133,10 +133,20 @@ def chunk_text(text, chunk_size):
 
 
 from youtube_transcript_api import YouTubeTranscriptApi
+from urllib.parse import urlparse, parse_qs
+
+def extract_video_id(youtube_url):
+    parsed_url = urlparse(youtube_url)
+    query_params = parse_qs(parsed_url.query)
+    video_id = query_params.get('v')
+    if video_id:
+        print(f"Video ID: {video_id}")
+        return video_id[0]
+    return ''
 
 def getYeetSRT(youtube_url):
     # Extract the video ID from the URL
-    video_id = youtube_url.split('v=')[1]
+    video_id = extract_video_id(youtube_url)
 
     # Get the transcript for the video
     srt = YouTubeTranscriptApi.get_transcript(video_id)
@@ -161,7 +171,7 @@ async def lookup_url(message):
         return None
 
     # Check if the URL is a YouTube URL
-    if "www.youtube.com" in url:
+    if any(domain in url for domain in ["www.youtube.com", "youtube.com", "youtu.be"]):
         try:
             transcript = getYeetSRT(url)
             chunks = [transcript[i:i+2000] for i in range(0, len(transcript), 2000)]
@@ -258,6 +268,11 @@ async def on_message(msg):
 
     user_warnings = set()
     curr_msg = msg
+    if curr_msg.attachments is not None:
+        curr_msg_images = [att for att in curr_msg.attachments if "image" in att.content_type]
+    else:
+        curr_msg_images = []
+
     while curr_msg and len(reply_chain) < MAX_MESSAGES:
         async with msg_locks.setdefault(curr_msg.id, asyncio.Lock()):
             if curr_msg.id not in msg_nodes:

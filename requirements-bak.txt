@@ -1,9 +1,11 @@
+distlib
+hpack
 nltk
-litellm
 aiohttp
 bs4
 discord
-python-dotenv
+dotenv
+mpldatacursor
 openai
 pipenv
 virtualenv
